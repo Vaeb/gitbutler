@@ -1,3 +1,4 @@
+import { checkForUpdates, registerUpdater } from "./updater.js";
 import WatcherManager from "./watcher.js";
 import {
 	liteIpcChannels,
@@ -252,8 +253,6 @@ const createMainWindow = async (): Promise<void> => {
 		},
 	});
 
-	mainWindow.maximize();
-
 	const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 	if (devServerUrl !== undefined) {
 		await mainWindow.loadURL(devServerUrl);
@@ -262,6 +261,8 @@ const createMainWindow = async (): Promise<void> => {
 	}
 
 	await mainWindow.loadFile(path.join(currentDirPath, "../ui/index.html"));
+	registerUpdater(mainWindow);
+	checkForUpdates();
 };
 
 void app.whenReady().then(async () => {
