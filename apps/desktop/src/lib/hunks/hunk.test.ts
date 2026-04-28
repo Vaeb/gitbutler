@@ -301,6 +301,18 @@ describe("hunkContainsHunk", () => {
 	test("returns true when ranges are identical", () => {
 		expect(hunkContainsHunk(baseHunk, baseHunk)).toBe(true);
 	});
+	test("returns true when a zero-length old range is anchored inside the parent hunk", () => {
+		const addition = { oldStart: 13, oldLines: 0, newStart: 23, newLines: 2, diff: "" };
+		expect(hunkContainsHunk(baseHunk, addition)).toBe(true);
+	});
+	test("returns true when a zero-length new range is anchored inside the parent hunk", () => {
+		const deletion = { oldStart: 13, oldLines: 2, newStart: 23, newLines: 0, diff: "" };
+		expect(hunkContainsHunk(baseHunk, deletion)).toBe(true);
+	});
+	test("returns false when a zero-length range is anchored outside the parent hunk", () => {
+		const addition = { oldStart: 30, oldLines: 0, newStart: 40, newLines: 1, diff: "" };
+		expect(hunkContainsHunk(baseHunk, addition)).toBe(false);
+	});
 });
 
 describe("hunkContainsLine", () => {
