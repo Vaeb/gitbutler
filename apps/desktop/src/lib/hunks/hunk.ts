@@ -264,11 +264,18 @@ export function canBePartiallySelected(patch: Patch): boolean {
 }
 
 export function hunkContainsHunk(a: HunkHeader, b: HunkHeader): boolean {
-	return rangeContains(a.oldStart, a.oldLines, b.oldStart, b.oldLines) &&
-		rangeContains(a.newStart, a.newLines, b.newStart, b.newLines);
+	return (
+		rangeContains(a.oldStart, a.oldLines, b.oldStart, b.oldLines) &&
+		rangeContains(a.newStart, a.newLines, b.newStart, b.newLines)
+	);
 }
 
-function rangeContains(outerStart: number, outerLines: number, innerStart: number, innerLines: number) {
+function rangeContains(
+	outerStart: number,
+	outerLines: number,
+	innerStart: number,
+	innerLines: number,
+) {
 	if (innerLines === 0) {
 		return outerStart <= innerStart && innerStart <= outerStart + outerLines;
 	}
