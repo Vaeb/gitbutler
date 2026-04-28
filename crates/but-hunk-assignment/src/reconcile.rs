@@ -27,14 +27,10 @@ impl HunkAssignment {
         if other.id.is_some() {
             self.id = other.id;
         }
-        // Override the lines added only if the other assignment has them set
-        if other.line_nums_added.is_some() {
-            self.line_nums_added = other.line_nums_added.clone();
-        }
-        // Override the lines removed only if the other assignment has them set
-        if other.line_nums_removed.is_some() {
-            self.line_nums_removed = other.line_nums_removed.clone();
-        }
+        // Keep line metadata from the current worktree assignment. Older
+        // assignments may have been generated with contextual hunks, while the
+        // current one is the ownership unit we want to persist.
+        self.stack_id = other.stack_id;
 
         // Override the branch target only if the current assignment already has one,
         // or if we're allowed to update previously unassigned hunks.
@@ -72,7 +68,7 @@ pub(crate) fn assignments(
         let mut new_assignment = new_assignment.clone();
         let intersecting = old
             .iter()
-            .filter(|current_entry| current_entry.intersects(new_assignment.clone()))
+            .filter(|current_entry| current_entry.ownership_intersects(&new_assignment))
             .collect::<Vec<_>>();
 
         match intersecting.len().cmp(&1) {

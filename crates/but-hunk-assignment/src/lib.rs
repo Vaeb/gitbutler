@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 use uuid::Uuid;
 
+const ASSIGNMENT_CONTEXT_LINES: u32 = 0;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "export-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -397,31 +399,68 @@ impl HunkAssignment {
 
         false
     }
+
+    /// Whether there is overlap between the actual changed lines of two assignments.
+    ///
+    /// This avoids treating contextual lines in unified diffs as ownership lines.
+    fn ownership_intersects(&self, other: &HunkAssignment) -> bool {
+        if self.path_bytes != other.path_bytes {
+            return false;
+        }
+
+        if self.hunk_header.is_none() || other.hunk_header.is_none() {
+            return true;
+        }
+
+        if let Some(intersects) = self.changed_lines_intersect(other) {
+            return intersects;
+        }
+
+        self.intersects(other.clone())
+    }
+
+    fn changed_lines_intersect(&self, other: &HunkAssignment) -> Option<bool> {
+        let self_has_line_metadata =
+            self.line_nums_added.is_some() || self.line_nums_removed.is_some();
+        let other_has_line_metadata =
+            other.line_nums_added.is_some() || other.line_nums_removed.is_some();
+
+        if !self_has_line_metadata || !other_has_line_metadata {
+            return None;
+        }
+
+        Some(
+            line_nums_intersect(&self.line_nums_added, &other.line_nums_added)
+                || line_nums_intersect(&self.line_nums_removed, &other.line_nums_removed),
+        )
+    }
+}
+
+fn line_nums_intersect(left: &Option<Vec<usize>>, right: &Option<Vec<usize>>) -> bool {
+    let (Some(left), Some(right)) = (left, right) else {
+        return false;
+    };
+
+    left.iter().any(|line| right.contains(line))
 }
 
 /// Applies assignment requests by reconciling them with the current worktree and persisted assignments.
 /// Persists the updated assignments and returns `Ok(())` on success.
 ///
-/// `context_lines` determines the amount of context lines in diffs, and it should match the UI.
+/// `_context_lines` is accepted for API compatibility. Assignments use zero-context diffs
+/// so nearby changes do not inherit ownership through shared display context.
 pub fn assign(
     db: HunkAssignmentsHandleMut,
     repo: &gix::Repository,
     workspace: &but_graph::projection::Workspace,
     requests: Vec<HunkAssignmentRequest>,
-    context_lines: u32,
+    _context_lines: u32,
 ) -> Result<()> {
     let branches_by_stack = workspace_branches_by_stack(workspace);
 
     let worktree_changes: Vec<but_core::TreeChange> =
         but_core::diff::worktree_changes(repo)?.changes;
-    let mut worktree_assignments = vec![];
-    for change in &worktree_changes {
-        let diff = change.unified_patch(repo, context_lines);
-        worktree_assignments.extend(HunkAssignment::from_tree_change(
-            change,
-            diff.ok().flatten(),
-        ));
-    }
+    let worktree_assignments = assignments_from_worktree_changes(repo, &worktree_changes);
 
     // Reconcile worktree with the persisted assignments
     let mut persisted_assignments = state::assignments(db.to_ref())?;
@@ -472,7 +511,7 @@ fn reconcile_worktree_changes_with_worktree(
     repo: &gix::Repository,
     workspace: &but_graph::projection::Workspace,
     worktree_changes: Option<impl IntoIterator<Item = impl Into<but_core::TreeChange>>>,
-    context_lines: u32,
+    _context_lines: u32,
 ) -> Result<Vec<HunkAssignment>> {
     let worktree_changes: Vec<but_core::TreeChange> = match worktree_changes {
         Some(wtc) => wtc.into_iter().map(Into::into).collect(),
@@ -482,19 +521,27 @@ fn reconcile_worktree_changes_with_worktree(
     if worktree_changes.is_empty() {
         return Ok(vec![]);
     }
-    let mut worktree_assignments = vec![];
-    for change in &worktree_changes {
-        let diff = change.unified_patch(repo, context_lines);
-        worktree_assignments.extend(HunkAssignment::from_tree_change(
-            change,
-            diff.ok().flatten(),
-        ));
-    }
+    let worktree_assignments = assignments_from_worktree_changes(repo, &worktree_changes);
     let mut reconciled = reconcile_with_worktree(db.to_ref(), workspace, &worktree_assignments)?;
 
     derive_stack_ids(&mut reconciled, workspace);
     state::set_assignments(db, reconciled.clone())?;
     Ok(reconciled)
+}
+
+fn assignments_from_worktree_changes(
+    repo: &gix::Repository,
+    worktree_changes: &[but_core::TreeChange],
+) -> Vec<HunkAssignment> {
+    let mut worktree_assignments = vec![];
+    for change in worktree_changes {
+        let diff = change.unified_patch(repo, ASSIGNMENT_CONTEXT_LINES);
+        worktree_assignments.extend(HunkAssignment::from_tree_change(
+            change,
+            diff.ok().flatten(),
+        ));
+    }
+    worktree_assignments
 }
 
 /// Returns the current hunk assignments for the workspace.
@@ -888,6 +935,16 @@ mod tests {
             });
             self
         }
+
+        pub fn with_added_lines(mut self, lines: &[usize]) -> Self {
+            self.line_nums_added = Some(lines.to_vec());
+            self
+        }
+
+        pub fn with_removed_lines(mut self, lines: &[usize]) -> Self {
+            self.line_nums_removed = Some(lines.to_vec());
+            self
+        }
     }
 
     impl HunkAssignmentRequest {
@@ -1000,6 +1057,17 @@ mod tests {
             HunkAssignment::new("foo.rs", 10, 7, None, None) // Lines 10 to 16
                 .intersects(HunkAssignment::new("foo.rs", 16, 5, None, None)) // Lines 16 to 20
         );
+    }
+
+    #[test]
+    fn test_ownership_intersection_uses_changed_lines_not_context() {
+        let previous_assignment =
+            HunkAssignment::new("foo.rs", 10, 8, Some(1), Some(1)).with_added_lines(&[12]);
+        let nearby_worktree_assignment =
+            HunkAssignment::new("foo.rs", 10, 8, None, None).with_added_lines(&[17]);
+
+        assert!(previous_assignment.intersects(nearby_worktree_assignment.clone()));
+        assert!(!previous_assignment.ownership_intersects(&nearby_worktree_assignment));
     }
 
     #[test]
@@ -1238,6 +1306,64 @@ mod tests {
         backfill_branch_ref_from_legacy_stack_id(&mut assignments, &workspace);
 
         assert_eq!(assignments[0].branch_ref_bytes, None);
+    }
+
+    #[test]
+    fn test_reconcile_nearby_changed_lines_do_not_inherit_assignment_from_context_overlap() {
+        let feature_ref = branch_ref("refs/heads/feature");
+        let branches = HashMap::from([(stack_id_seq(1), vec![feature_ref])]);
+        let previous_assignments = vec![
+            HunkAssignment::new("foo.rs", 10, 8, Some(1), Some(1))
+                .with_branch_ref_bytes(Some("refs/heads/feature"))
+                .with_added_lines(&[12]),
+        ];
+        let worktree_assignments = vec![
+            HunkAssignment::new("foo.rs", 12, 1, None, None).with_added_lines(&[12]),
+            HunkAssignment::new("foo.rs", 17, 1, None, None).with_added_lines(&[17]),
+        ];
+
+        let result = reconcile::assignments(
+            &worktree_assignments,
+            &previous_assignments,
+            &branches,
+            MultipleOverlapping::SetMostLines,
+            true,
+        );
+
+        assert_eq!(
+            result[0].branch_ref_bytes.as_ref().map(|r| r.to_string()),
+            Some("refs/heads/feature".to_string())
+        );
+        assert_eq!(result[0].line_nums_added, Some(vec![12]));
+        assert_eq!(result[1].branch_ref_bytes, None);
+        assert_eq!(result[1].line_nums_added, Some(vec![17]));
+    }
+
+    #[test]
+    fn test_reconcile_removed_line_overlap_preserves_assignment() {
+        let feature_ref = branch_ref("refs/heads/feature");
+        let branches = HashMap::from([(stack_id_seq(1), vec![feature_ref])]);
+        let previous_assignments = vec![
+            HunkAssignment::new("foo.rs", 10, 8, Some(1), Some(1))
+                .with_branch_ref_bytes(Some("refs/heads/feature"))
+                .with_removed_lines(&[14]),
+        ];
+        let worktree_assignments =
+            vec![HunkAssignment::new("foo.rs", 14, 1, None, None).with_removed_lines(&[14])];
+
+        let result = reconcile::assignments(
+            &worktree_assignments,
+            &previous_assignments,
+            &branches,
+            MultipleOverlapping::SetMostLines,
+            true,
+        );
+
+        assert_eq!(
+            result[0].branch_ref_bytes.as_ref().map(|r| r.to_string()),
+            Some("refs/heads/feature".to_string())
+        );
+        assert_eq!(result[0].line_nums_removed, Some(vec![14]));
     }
 
     #[test]
