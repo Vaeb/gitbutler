@@ -11,7 +11,12 @@
 	import { draggableChips } from "$lib/dragging/draggable";
 	import { HunkDropDataV3 } from "$lib/dragging/draggables";
 	import { DROPZONE_REGISTRY } from "$lib/dragging/registry";
-	import { canBePartiallySelected, getLineLocks, hunkHeaderEquals } from "$lib/hunks/hunk";
+	import {
+		canBePartiallySelected,
+		getLineLocks,
+		hunkContainsHunk,
+		hunkHeaderEquals,
+	} from "$lib/hunks/hunk";
 	import { IRC_API_SERVICE } from "$lib/irc/ircApiService";
 	import { type SelectionId } from "$lib/selection/key";
 	import { UNCOMMITTED_SERVICE } from "$lib/selection/uncommittedService.svelte";
@@ -126,7 +131,10 @@
 		// a hash set.
 		const filtered = hunks.filter((hunk) => {
 			return assignments.current.some((assignment) =>
-				assignment?.hunkHeader === null ? true : hunkHeaderEquals(hunk, assignment.hunkHeader),
+				assignment?.hunkHeader === null
+					? true
+					: hunkHeaderEquals(hunk, assignment.hunkHeader) ||
+						hunkContainsHunk(hunk, assignment.hunkHeader),
 			);
 		});
 		return filtered;

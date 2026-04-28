@@ -263,13 +263,19 @@ export function canBePartiallySelected(patch: Patch): boolean {
 	return true;
 }
 
-export function hunkContainsHunk(a: DiffHunk, b: DiffHunk): boolean {
-	return (
-		a.oldStart <= b.oldStart &&
-		a.oldStart + a.oldLines - 1 >= b.oldStart + b.oldLines - 1 &&
-		a.newStart <= b.newStart &&
-		a.newStart + a.newLines - 1 >= b.newStart + b.newLines - 1
-	);
+export function hunkContainsHunk(a: HunkHeader, b: HunkHeader): boolean {
+	return rangeContains(a.oldStart, a.oldLines, b.oldStart, b.oldLines) &&
+		rangeContains(a.newStart, a.newLines, b.newStart, b.newLines);
+}
+
+function rangeContains(outerStart: number, outerLines: number, innerStart: number, innerLines: number) {
+	if (innerLines === 0) {
+		return outerStart <= innerStart && innerStart <= outerStart + outerLines;
+	}
+	if (outerLines === 0) {
+		return outerStart === innerStart && innerLines === 0;
+	}
+	return outerStart <= innerStart && outerStart + outerLines - 1 >= innerStart + innerLines - 1;
 }
 
 /**
